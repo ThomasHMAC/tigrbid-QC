@@ -327,6 +327,7 @@ for _, row in merged_batch.iterrows():
         f"{fmri_dir}/sourcedata/freesurfer/sub-{sub_id}/scripts/recon-all-status.log"
     )
     complete_time = None
+    formatted_date = None
     if log_file.is_file():
         lines = log_file.read_text().splitlines()
         last_line = lines[-1]
@@ -393,7 +394,7 @@ for _, row in merged_batch.iterrows():
         session_id=ses_id,
         run_id=run_id,
         pipeline="freesurfer-7.4.1",
-        complete_timestamp=formatted_date if "formatted_date" in locals() else None,
+        complete_timestamp=formatted_date,
         rater=rater_name,
         require_rerun=require_rerun,
         final_qc=final_qc,
