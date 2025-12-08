@@ -33,3 +33,5 @@ streamlit run ./data/freesurfer/fs_main.py --server.port=8501 -- \
   --participant_labels /projects/ttan/tigrbid-QC/SPINS_participants.tsv \
   --output_dir /projects/ttan/tigrbid-QC/outputs/SPINS_QC/
 ```
+
+Once you run this you can open a browser on your computer and paste in the http://localhost:8501 URL
