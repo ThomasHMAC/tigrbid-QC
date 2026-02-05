@@ -22,7 +22,8 @@ class MetricQC(BaseModel):
 
 class QCRecord(BaseModel):
     subject_id: Annotated[str, Field(description="BIDS subject ID")]
-    session_id: Annotated[str, Field(description="Session ID, e.g., ses-01")]
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID, e.g., ses-01")] = None
     task_id: Optional[str] = None
     run_id: Optional[str] = None
     pipeline: Annotated[
