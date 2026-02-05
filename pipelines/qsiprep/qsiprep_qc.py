@@ -54,10 +54,10 @@ qsiprep_dir = args.qsiprep_dir
 out_dir = args.out_dir
 
 
-qsiprep_dir = "/projects/ttan/PSIBD/data/share/qsiprep/0.22.0"
-participant_labels = "/projects/ttan/PSIBD/data/local/bids/participants.tsv"
-out_dir = "/projects/ttan/tigrbid-QC/outputs/PSIBD_QC"
-participants_df = pd.read_csv(participant_labels, delimiter="\t")
+# qsiprep_dir = "/projects/ttan/PSIBD/data/share/qsiprep/0.22.0"
+# participant_labels = "/projects/ttan/PSIBD/data/local/bids/participants.tsv"
+# out_dir = "/projects/ttan/tigrbid-QC/outputs/PSIBD_QC"
+# participants_df = pd.read_csv(participant_labels, delimiter="\t")
 
 st.title("QSIPrep QC")
 rater_name = st.text_input("Rater name:")
@@ -102,49 +102,66 @@ def save_qc_results_to_csv(out_file, qc_records):
     out_file = Path(out_file)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Flatten metrics dynamically
     rows = []
-    # qc_records = [QCRecord(**rec) for rec in qc_records_dict.values()]
-
     for rec in qc_records:
+        # 1. Start with IDs
         row = {
-            "subject": f"sub-{rec.subject_id}",
+            "subject": f"sub-{rec.subject_id}" if not str(rec.subject_id).startswith("sub-") else rec.subject_id,
             "session": rec.session_id,
-            "task": str(rec.task_id),
-            "run": str(rec.run_id),
+            "task": rec.task_id, 
+            "run": rec.run_id,
             "pipeline": rec.pipeline,
             "complete_timestamp": rec.complete_timestamp,
         }
 
+        # 2. Add Metrics (Dynamically inserted here in the middle)
         for m in rec.metrics:
             metric_name = m.name.lower().replace("-", "_")
-            if m.value is not None:
-                row[f"{metric_name}_value"] = m.value
             if m.qc is not None:
-                row[f"{metric_name}"] = m.qc
+                row[metric_name] = m.qc
+            if hasattr(m, 'value') and m.value is not None:
+                row[f"{metric_name}_value"] = m.value
 
-        row.update(
-            {
-                "require_rerun": rec.require_rerun,
-                "rater": rec.rater,
-                "final_qc": rec.final_qc,
-                "notes": next(
-                    (m.notes for m in rec.metrics if m.name == "QC_notes"), None
-                ),
-            }
-        )
+        # 3. Add Verdicts (Always at the end of the dict)
+        row.update({
+            "require_rerun": rec.require_rerun,
+            "rater": rec.rater,
+            "final_qc": rec.final_qc,
+            "notes": next((m.notes for m in rec.metrics if m.name == "QC_notes"), None),
+        })
         rows.append(row)
 
     df = pd.DataFrame(rows)
+    
     if out_file.exists():
+        # Load existing and ensure we align the new data to the OLD column order
         df_existing = pd.read_csv(out_file)
+        
+        # Combine them
         df = pd.concat([df_existing, df], ignore_index=True)
-        # Drop duplicates based on all columns or a subset
+        
+        # Deduplicate
+        cols_to_fix = ["subject", "session", "task", "run"]
+        for col in cols_to_fix:
+            if col in df.columns:
+                df[col] = df[col].replace({pd.NA: None, np.nan: None, "": None, "None": None})
+
         df = df.drop_duplicates(
-            subset=["subject", "session", "task", "run", "pipeline"], keep="last"
+            subset=["subject", "session", "task", "run", "pipeline"], 
+            keep="last"
         )
-    df = df.sort_values(by=["subject"]).reset_index(drop=True)
-    df.to_csv(out_file, index=False)
+
+        # FIX: Ensure any NEW columns (like sdc_qc) don't shove 'notes' out of the way
+        # We move 'notes', 'final_qc', etc., back to the end one last time
+    end_cols = ["require_rerun", "rater", "final_qc", "notes"]
+    
+    # Create list of columns: (All columns NOT in end_cols) + (The end_cols)
+    cols = [c for c in df.columns if c not in end_cols] + [c for c in end_cols if c in df.columns]
+    df = df[cols]
+
+    # Sort so Global (NaN) is always first
+    df = df.sort_values(by=["subject", "session", "task", "run"], na_position='first').reset_index(drop=True)
+    df.to_csv(out_file, index=False, na_rep='')
 
     return out_file
 
@@ -175,36 +192,41 @@ def get_qc_key(filepath: Path) -> QCKey:
     }
     
     # Build label
-    parts = [entities[k] for k in ["ses", "task", "run"] if entities[k]]
-    label = " | ".join(parts) if parts else "Global_Subject_Level"
+    if entities["run"]:
+        label = f"run-level QC"
+    elif entities["task"]:
+        label = f"task-level QC"
+    elif entities["ses"]:
+        label = f"session-level QC"
+    else:
+        label = "subject-level QC"
     
     return QCKey(label=label, **entities)
 
 def collect_subject_qc(qsiprep_dir: Path, sub_id: str, configs: List) -> Dict[QCKey, List[QCEntry]]:
-    base_path = Path(qsiprep_dir) / f"sub-{sub_id}" / "figures"
-    if not base_path.exists():
-        return {}
+    
+    qsiprep_dir = Path(qsiprep_dir)
+    figures_path = qsiprep_dir / f"sub-{sub_id}" / "figures"
+    
+    search_paths = [qsiprep_dir, figures_path]
 
-    # Map patterns to their metadata
-    # pattern_map = {c[0]: (c[1], c[2]) for c in configs}
-    pattern_map = {pattern: (qc_name, metric_id) for pattern, qc_name, metric_id in configs}
-    bundles = defaultdict(list)
-    # Nested dictionary: The outer key is the Scope (Run/Session), 
-    # the inner key is the specific Metric ID.
     temp_bundles = defaultdict(dict)
 
-    # Single pass through the directory
-    for f in base_path.iterdir():
-        if f.suffix not in {".svg", ".html"}:
-            continue
+    for pattern, qc_name, metric_id in configs:
+        for path in search_paths:
+            if not path.exists():
+                continue
             
-        f_name = f.name
-        for pattern, (qc_name, metric_id) in pattern_map.items():
-            print(pattern)
-            if pattern in f_name:
+            # Use a glob that ensures we only pick up files for THIS subject
+            # This is important in the root dir where other subjects' HTMLs live
+            search_pattern = f"sub-{sub_id}*{pattern}*"
+            
+            for f in path.glob(search_pattern):
+                if f.suffix not in {".svg", ".html"}:
+                    continue
+                
                 key = get_qc_key(f)
-                print(f_name, key)
-                # If this metric doesn't exist for this run yet, create it
+                
                 if metric_id not in temp_bundles[key]:
                     temp_bundles[key][metric_id] = QCEntry(
                         svg_list=[f], 
@@ -212,94 +234,12 @@ def collect_subject_qc(qsiprep_dir: Path, sub_id: str, configs: List) -> Dict[QC
                         metric_name=metric_id
                     )
                 else:
-                    # If it exists, just append the new SVG path
-                    temp_bundles[key][metric_id].svg_list.append(f)
-                
-                # Break the inner loop once a pattern is matched to save cycles
-                break 
+                    # Avoid adding the same file twice if paths overlap
+                    if f not in temp_bundles[key][metric_id].svg_list:
+                        temp_bundles[key][metric_id].svg_list.append(f)
 
-    # Convert the inner dictionary to a list so it matches your existing display logic
     return {key: list(metrics.values()) for key, metrics in temp_bundles.items()}
-    
-    # Scans the directory once
-    # for f in base_path.rglob("*"):
-    #     if f.suffix not in {".svg", ".html"}:
-    #         continue
-            
-    #     for pattern, (qc_name, metric_name) in pattern_map.items():
-    #         if pattern in f.name:
-    #             key = get_qc_key(f)
-    #             # Find if we already have an entry for this metric in this bundle
-    #             existing = next((x for x in bundles[key] if x.metric_name == metric_name), None)
-    #             if existing:
-    #                 existing.svg_list.append(f)
-    #             else:
-    #                 bundles[key].append(QCEntry([f], qc_name, metric_name))
-    # return bundles
 
-# def collect_qc_svgs(qsiprep_dir: str, sub_id: str, pattern: str):
-#     """
-#     Collects QC figures and auto-detects if they are subject-wide (global) 
-#     or specific to a session/task/run.
-#     Returns:
-#       - For per-run QC:
-#           {
-#             "<ses-id> | <task-id> | <run-id>": [list of Path],
-#           }
-      
-#       - For global QC:
-#           {
-#             "Global/Subject-level": [list of Path],
-#           }
-#     """
-#     base_path = Path(qsiprep_dir) / f"sub-{sub_id}" / "figures"
-#     # Collect both SVG and HTML
-#     valid_suffixes = {".svg", ".html"}
-#     svg_paths = [
-#         f for f in base_path.rglob(f"sub-{sub_id}*{pattern}*")
-#         if f.suffix in valid_suffixes
-#     ]
-
-#     if not svg_paths:
-#         st.warning(f" No {pattern} SVGs found for subject {sub_id}")
-
-#     flattened_data = {}
-
-#     for p in sorted(svg_paths):
-#         label = get_label(p)
-#         if label not in flattened_data:
-#             flattened_data[label] = []
-#         flattened_data[label].append(p)
-
-#     return flattened_data
-
-# def get_label(p: Path) -> str:
-#     """Extracts BIDS entities to create a readable UI label."""
-#     e = get_entities(p) 
-#     parts = []
-    
-#     # Check for specific BIDS entities in order
-#     for key in ["session", "task", "run"]:
-#         val = e.get(key)
-#         if val:
-#             parts.append(str(val))
-    
-#     return " | ".join(parts) if parts else "Global_Subject_Level"
-
-# def get_entities(filepath: Path) -> Dict[str, Optional[str]]:
-#     fname = filepath.name
-
-#     sub = re.search(r"sub-([a-zA-Z0-9]+)", fname)
-#     ses = re.search(r"ses-([a-zA-Z0-9]+)", fname)
-#     task = re.search(r"task-([a-zA-Z0-9]+)", fname)
-#     run = re.search(r"run-([0-9]+)", fname)
-
-#     return {
-#         "subject": sub.group(1) if sub else None,
-#         "session": f"ses-{ses.group(1)}" if ses else None,
-#         "task": task.group(1) if task else None,
-#         "run": f"run-{run.group(1)}" if run else None,
-#     }
 
 def extract_fieldmap_method(html_path):
     """Parse a single HTML file and extract the susceptibility distortion correction method."""
@@ -351,7 +291,7 @@ out_file = Path(out_dir) / f"QSIPrep_QC_status_test.csv"
 
 def get_metrics_from_csv(qc_results: Path):
     if not qc_results.exists():
-        return {}, lambda *args: None
+        return {}, lambda *args,**kwargs: None
     
     # Load Data
     df = pd.read_csv(qc_results)
@@ -474,149 +414,94 @@ def display_svg_group(
             name=metric_name,
             qc=qc_choice
         ))
+
 # Collect all the current batch subject metrics
 qc_records = []
 
 # 1. Configuration for the QC metrics you want to collect
 
 qc_configs = [
+    ("seg_brainmask", "T1 tissue segmentation", "segmentation_qc"),
     ("desc-sdc_b0", "Susceptible Distortion Correction", "sdc_qc"),
     ("coreg", "B0 to T1 Coregistration", "b0_2_t1_qc"),
-    ("seg_brainmask", "T1 tissue segmentation", "segmentation_qc"),
-    ("t1_2_mni", "T1 to MNI Coregistration", "t1_2_mni_qc")
+    ("t1_2_mni", "T1 to MNI Coregistration", "t1_2_mni_qc"),
+    (".html", "FieldMap Method", "fieldmap_method")
 ]
-
-pattern_map = {pattern: (qc_name, metric_id) for pattern, qc_name, metric_id in qc_configs}
 
 for _, row in current_batch.iterrows():
     subj = row["participant_id"]
     parts = subj.split("_")
     sub_id = parts[0].split("-")[1]
 
-    # 1. Collect all data for this subject in one pass
     qc_bundles = collect_subject_qc(Path(qsiprep_dir), sub_id, qc_configs)
-    qc_bundles_test = collect_subject_qc(Path(qsiprep_dir), sub_id, qc_configs)
-    # 2. Sort labels (Global first)
-    sorted_keys = sorted(qc_bundles_test.keys(), key=lambda x: (x.label != "Global_Subject_Level", x.label))
+    # sorted_keys = sorted(qc_bundles.keys(), key=lambda x: (x.label != "Global_Subject_Level", x.label))
     
-    for key in sorted_keys:
-        # st.markdown(f"### {key.label if key.label != 'Global_Subject_Level' else 'Global Subject Metrics'}")
-        print(f"### {key.label if key.label != 'Global_Subject_Level' else 'Global Subject Metrics'}")
-        run_metrics = []
-        
+    # 1. Temporary storage to keep bundle metrics separate before saving
+    temp_bundles_to_save = []
+
+    for key in qc_bundles.keys():
+        bundle_metrics = []
+        ses, task, run = key.ses, key.task, key.run
+
         for item in qc_bundles[key]:
             if item.metric_name == "fieldmap_method":
-                # Handle text metrics
                 for path in item.svg_list:
                     method = extract_fieldmap_method(path)
-                    run_metrics.append(MetricQC(name=item.metric_name, value=method))
+                    bundle_metrics.append(MetricQC(name=item.metric_name, value=method))
             else:
-                # Cleaner call using the structured key
                 display_svg_group(
                     svg_list=item.svg_list,
                     sub_id=sub_id,
                     qc_name=item.qc_name,
                     metric_name=item.metric_name,
-                    subject_metrics=run_metrics,
-                    ses=key.ses,
-                    task=key.task,
-                    run=key.run
+                    subject_metrics=bundle_metrics,
+                    ses=ses, task=task, run=run
                 )
-    # 2. Collect and group by label
-    # for pattern, qc_name, metric_name in qc_configs:
-    #     # This now returns { "label": [paths] }
-    #     svg_bundle = collect_qc_svgs(qsiprep_dir, sub_id, pattern)
-
-    #     for label, svg_list in svg_bundle.items():
-    #         if label not in qc_bundles:
-    #             qc_bundles[label] = []
-            
-    #         # We store the metric info under this label
-    #         qc_bundles[label].append({
-    #             "svg_list": svg_list,
-    #             "qc_name": qc_name,
-    #             "metric_name": metric_name
-    #         })
-
-    # # 3. Display the bundled results
-    # # Sort the labels so Global shows up first consistently
-    # sorted_labels = sorted(qc_bundles.keys(), key=lambda x: (x != "Global_Subject_Level", x))
-
-    # for label in sorted_labels:
-    #     ses = task = run = None
-    #     if label == "Global_Subject_Level":
-    #         st.markdown("### Global Metric Subject Level")
-    #     else:
-    #         parts = label.split(" | ")
-    #         if len(parts) >= 1: ses = parts[0]
-    #         if len(parts) >= 2: task = parts[1]
-    #         if len(parts) >= 3: run = parts[2]
-    #         st.markdown(f"### {label}")
-
-    #     run_metrics = []  # To store MetricQC objects for this specific scan/global group
         
-    #     for item in qc_bundles[label]:
-    #         svg_list = item["svg_list"]
-    #         qc_name = item["qc_name"]
-    #         metric_name = item["metric_name"]
+        # Save this bundle's data for Pass 2
+        temp_bundles_to_save.append({
+            "ses": ses, "task": task, "run": run, "metrics": bundle_metrics
+        })
 
-    #         if metric_name == "fieldmap_method":
-    #             for html_path in svg_list:
-    #                 method = extract_fieldmap_method(html_path)
-    #                 run_metrics.append(MetricQC(name=metric_name, value=method))
-    #         else:
-    #             # Note: We pass the 'label' as a single string now. 
-    #             # If your display_svg_group function still requires ses, task, run separately, 
-    #             # you would need to parse them from the label (see below).
-    #             display_svg_group(
-    #                 svg_list=svg_list,
-    #                 sub_id=sub_id,
-    #                 qc_name=qc_name,
-    #                 metric_name=metric_name,
-    #                 subject_metrics=run_metrics,
-    #                 ses=ses,
-    #                 task=task,
-    #                 run=run
-    #             )
-        # --- Require rerun QC radio ---
-        metric = "require_rerun"
-        stored_val = get_val(f"sub-{sub_id}", ses, task, run, metric)
-        # stored_val = None
-        options = ("YES", "NO")
-        require_rerun = st.radio(
-            f"Require rerun?",
-            options,
-            key=f"{sub_id}_{ses}_{task}_{run}_rerun",
-            index=options.index(stored_val) if stored_val in options else None,
-        )
-        if require_rerun is None:
-            final_qc = None
-        else:
-            final_qc = "FAIL" if require_rerun == "YES" else "PASS"
-        # Notes
-        metric = "notes"
-        stored_val = get_val(f"sub-{sub_id}", ses, task, run, metric)
-        notes = st.text_input(f"***NOTES***", key=f"{sub_id}_{ses}_{task}_{run}_notes", value=stored_val)
-        run_metrics.append(MetricQC(name="QC_notes", notes=notes))
-        # all_metrics = global_metrics + run_metrics
-    # st.write(subject_metrics)
+    # --- 2. Master Verdict: OUTSIDE the sorted_keys loop ---
+    st.divider()
+    st.subheader("Final Subject Verdict")
+
+    # Look up existing values at the Subject Level (using None for entities)
+    stored_rerun = get_val(f"sub-{sub_id}", metric="require_rerun")
+    stored_notes = get_val(f"sub-{sub_id}", metric="notes")
     
-    
-    # Create QCRecord
+    options = ("YES", "NO")
+    # Note: Unique key using ONLY sub_id to ensure only one radio button exists
+    require_rerun = st.radio(
+        "Require rerun?",
+        options,
+        key=f"{sub_id}_final_rerun_choice",
+        index=options.index(stored_rerun) if stored_rerun in options else None,
+        horizontal=True
+    )
+
+    final_qc = "FAIL" if require_rerun == "YES" else ("PASS" if require_rerun == "NO" else None)
+    notes = st.text_input(f"***NOTES***", key=f"{sub_id}_final_notes_input", value=stored_notes if stored_notes else "")
+
+    # --- 3. Pass 2: Create QCRecords for every bundle found ---
+    for entry in temp_bundles_to_save:
+        # Attach the shared notes to every record
+        entry["metrics"].append(MetricQC(name="QC_notes", notes=notes))
+        
         record = QCRecord(
             subject_id=sub_id,
-            session_id=ses,
-            task_id=task,
-            run_id=run,
-            pipeline="fmriprep-23.2.3",
-            complete_timestamp= None,
+            session_id=entry["ses"],
+            task_id=entry["task"],
+            run_id=entry["run"],
+            pipeline="qsiprep-0.22.0",
+            complete_timestamp=None,
             rater=rater_name,
             require_rerun=require_rerun,
             final_qc=final_qc,
-            metrics=run_metrics,
+            metrics=entry["metrics"],
         )
         qc_records.append(record)
-    # st.session_state.current_batch_qc[sub_id] = record.model_dump()
 
 # Pagination Controls - MOVED TO TOP
 bottom_menu = st.columns((1, 2, 1))
