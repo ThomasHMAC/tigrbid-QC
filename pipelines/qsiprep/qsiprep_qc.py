@@ -53,6 +53,8 @@ participant_labels = args.participant_labels
 qsiprep_dir = args.qsiprep_dir
 out_dir = args.out_dir
 
+participants_df = pd.read_csv(participant_labels, delimiter="\t")
+
 st.title("QSIPrep QC")
 rater_name = st.text_input("Rater name:")
 # Show the value dynamically
@@ -459,7 +461,7 @@ for _, row in current_batch.iterrows():
 
     # --- 2. Master Verdict: OUTSIDE the sorted_keys loop ---
     st.divider()
-    st.subheader("Final Subject Verdict")
+    # st.subheader("Final Subject Verdict")
 
     # Look up existing values at the Subject Level (using None for entities)
     stored_rerun = get_val(f"sub-{sub_id}", metric="require_rerun")
