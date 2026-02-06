@@ -51,10 +51,6 @@ participant_labels = args.participant_labels
 fmri_dir = args.fmri_dir
 out_dir = args.out_dir
 
-
-fmri_dir = "/projects/ttan/PSIBD/data/share/fmriprep/23.2.3"
-participant_labels = "/projects/ttan/PSIBD/data/local/bids/participants.tsv"
-out_dir = "/projects/ttan/tigrbid-QC/outputs/PSIBD_QC"
 participants_df = pd.read_csv(participant_labels, delimiter="\t")
 
 st.title("fMRIPrep QC")
@@ -249,11 +245,11 @@ total_rows, current_batch = get_current_batch(
 # out_dir = "/projects/ttan/tigrbid-QC/outputs"
 now = datetime.now()
 # timestamp = now.strftime("%Y%m%d")  # e.g., 20250917
-out_file = Path(out_dir) / f"fMRIPrep_QC_status_test.csv"
+out_file = Path(out_dir) / f"fMRIPrep_QC_status.csv"
 
 def get_metrics_from_csv(qc_results: Path):
     if not qc_results.exists():
-        return {}, lambda *args: None
+        return {}, lambda *args,**kwargs: None
     
     # Load Data
     df = pd.read_csv(qc_results)
@@ -383,24 +379,6 @@ for _, row in current_batch.iterrows():
     parts = subj.split("_")
     sub_id = parts[0].split("-")[1]
 
-    # --- Global metric: dseg ---
-
-    # --- brain tissue segmentation QC radio ---
-    # dseg_svgs = collect_qc_svgs(fmri_dir, sub_id, "desc-preproc_dseg")
-    # if dseg_svgs["type"] == "global" and not dseg_svgs["data"]:
-    #     dseg_svgs = collect_qc_svgs(fmri_dir, sub_id, "dseg")
-
-    # Store global dseg metric (no session/run)
-    # global_metrics = []
-
-    # metrics per subject
-    # display_svg_group(
-    #     svg_list=dseg_svgs["data"],
-    #     sub_id=sub_id,
-    #     qc_name="Brain Tissue Segmentation",
-    #     metric_name="dseg_qc",
-    #     subject_metrics=global_metrics)
-    # # Per session -> task by run
     per_run_bundles = {}
 
     for pattern, qc_name, metric_name in [
