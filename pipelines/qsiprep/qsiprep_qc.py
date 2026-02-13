@@ -116,7 +116,7 @@ def save_qc_results_to_csv(out_file, qc_records):
             if m.qc is not None:
                 row[metric_name] = m.qc
             if hasattr(m, 'value') and m.value is not None:
-                row[f"{metric_name}_value"] = m.value
+                row[f"{metric_name}"] = m.value
 
         # 3. Add Verdicts (Always at the end of the dict)
         row.update({
@@ -217,7 +217,7 @@ def collect_subject_qc(qsiprep_dir: Path, sub_id: str, configs: List) -> Dict[QC
             # This is important in the root dir where other subjects' HTMLs live
             search_pattern = f"sub-{sub_id}*{pattern}*"
             
-            for f in path.glob(search_pattern):
+            for f in sorted(path.glob(search_pattern)):
                 if f.suffix not in {".svg", ".html"}:
                     continue
                 
@@ -273,7 +273,7 @@ def extract_fieldmap_method(html_path):
             method = "NOT FOUND"
 
         results[session_id] = method
-    return method
+    return results
 
 total_rows, current_batch = get_current_batch(
     participants_df, st.session_state.current_page, st.session_state.batch_size
@@ -325,30 +325,40 @@ def get_metrics_from_csv(qc_results: Path):
             return None
 
         s_sub = sub_id if sub_id.startswith("sub-") else f"sub-{sub_id}"
-
-        keys = [
-            # 1. EXACT MATCH (e.g., sub-01, ses-01, task-rest, run-1)
-            (s_sub, ses_id, task_id, run_id),
-            
-            # 2. TASK/SESSION LEVEL (Ignore Run)
-            # Useful if a metric applies to the whole task in this session
-            (s_sub, ses_id, task_id, None),
-
-            # 3. SESSION LEVEL (Ignore Task & Run)
-            # Useful for session notes or session-wide anatomical checks
-            (s_sub, ses_id, None, None),
-
-            # 4. GLOBAL SUBJECT LEVEL (Ignore Everything)
-            # Useful for T1w QC, demographics, etc.
-            (s_sub, None, None, None)
-        ]
-
-        for key in keys:
-            # Look up the dict
-            val = data_dict.get(key, {}).get(metric)
-            if val is not None and not pd.isna(val):
-                return val
+        # Create the EXACT key you are looking for
+        target_key = (s_sub, ses_id, task_id, run_id)
+    
+        # Direct lookup: No fallback, no loop
+        val = data_dict.get(target_key, {}).get(metric)
+    
+        # Return the value only if it's not None/NaN
+        if val is not None and not pd.isna(val):
+            return val
         return None
+        # keys = [
+        #     # 1. EXACT MATCH (e.g., sub-01, ses-01, task-rest, run-1)
+        #     (s_sub, ses_id, task_id, run_id),
+            
+        #     # 2. TASK/SESSION LEVEL (Ignore Run)
+        #     # Useful if a metric applies to the whole task in this session
+        #     (s_sub, ses_id, task_id, None),
+
+        #     # 3. SESSION LEVEL (Ignore Task & Run)
+        #     # Useful for session notes or session-wide anatomical checks
+        #     (s_sub, ses_id, None, None),
+
+        #     # 4. GLOBAL SUBJECT LEVEL (Ignore Everything)
+        #     # Useful for T1w QC, demographics, etc.
+        #     (s_sub, None, None, None)
+        # ]
+
+        # for key in keys:
+        #     # Look up the dict
+        #     val = data_dict.get(key, {}).get(metric)
+        #     print(val)
+        #     if val is not None and not pd.isna(val):
+        #         return val
+        # return None
     return data_dict, get_val
 
 # Load the existing qc_results if exist
@@ -410,7 +420,7 @@ def display_svg_group(
             name=metric_name,
             qc=qc_choice
         ))
-
+        
 # Collect all the current batch subject metrics
 qc_records = []
 
@@ -420,31 +430,36 @@ qc_configs = [
     ("seg_brainmask", "T1 tissue segmentation", "segmentation_qc"),
     ("desc-sdc_b0", "Susceptible Distortion Correction", "sdc_qc"),
     ("coreg", "B0 to T1 Coregistration", "b0_2_t1_qc"),
-    ("t1_2_mni", "T1 to MNI Coregistration", "t1_2_mni_qc"),
-    (".html", "FieldMap Method", "fieldmap_method")
+    ("t1_2_mni", "T1 to MNI Coregistration", "t1_2_mni_qc")
+    # (".html", "FieldMap Method", "fieldmap_method")
 ]
 
 for _, row in current_batch.iterrows():
     subj = row["participant_id"]
     parts = subj.split("_")
     sub_id = parts[0].split("-")[1]
-
-    qc_bundles = collect_subject_qc(Path(qsiprep_dir), sub_id, qc_configs)
-    # sorted_keys = sorted(qc_bundles.keys(), key=lambda x: (x.label != "Global_Subject_Level", x.label))
     
+    # Extract session specific fieldmap method from subject HTML
+    html_path = Path(qsiprep_dir) / f"sub-{sub_id}.html"
+    fieldmap_methods = extract_fieldmap_method(html_path)
+    qc_bundles = collect_subject_qc(Path(qsiprep_dir), sub_id, qc_configs)
+
+    # Order Subject-level QC always before session-level QC
+    # sorted_keys = sorted(qc_bundles.keys(), key=lambda x: (x.label != "subject-level QC", x.label))
+
     # 1. Temporary storage to keep bundle metrics separate before saving
-    temp_bundles_to_save = []
+    # temp_bundles_to_save = []
 
     for key in qc_bundles.keys():
         bundle_metrics = []
         ses, task, run = key.ses, key.task, key.run
-
+        # Fall-back if no session in qsiprep
+        ses_id = ses if ses else "nosession"
+        if key.label == "session-level QC" and ses in fieldmap_methods:
+            method_value = fieldmap_methods.get(ses_id, "UNKNOWN")
+            bundle_metrics.append(MetricQC(name="fieldmap_method", value=method_value))
         for item in qc_bundles[key]:
-            if item.metric_name == "fieldmap_method":
-                for path in item.svg_list:
-                    method = extract_fieldmap_method(path)
-                    bundle_metrics.append(MetricQC(name=item.metric_name, value=method))
-            else:
+                print(f"Displaying :{item.svg_list}")
                 display_svg_group(
                     svg_list=item.svg_list,
                     sub_id=sub_id,
@@ -455,49 +470,63 @@ for _, row in current_batch.iterrows():
                 )
         
         # Save this bundle's data for Pass 2
-        temp_bundles_to_save.append({
-            "ses": ses, "task": task, "run": run, "metrics": bundle_metrics
-        })
+        # temp_bundles_to_save.append({
+        #     "ses": ses, "task": task, "run": run, "metrics": bundle_metrics
+        # })
 
     # --- 2. Master Verdict: OUTSIDE the sorted_keys loop ---
-    st.divider()
-    # st.subheader("Final Subject Verdict")
+        st.divider()
+        # st.subheader("Final Subject Verdict")
 
-    # Look up existing values at the Subject Level (using None for entities)
-    stored_rerun = get_val(f"sub-{sub_id}", metric="require_rerun")
-    stored_notes = get_val(f"sub-{sub_id}", metric="notes")
-    
-    options = ("YES", "NO")
-    # Note: Unique key using ONLY sub_id to ensure only one radio button exists
-    require_rerun = st.radio(
-        "Require rerun?",
-        options,
-        key=f"{sub_id}_final_rerun_choice",
-        index=options.index(stored_rerun) if stored_rerun in options else None,
-        horizontal=True
-    )
-
-    final_qc = "FAIL" if require_rerun == "YES" else ("PASS" if require_rerun == "NO" else None)
-    notes = st.text_input(f"***NOTES***", key=f"{sub_id}_final_notes_input", value=stored_notes if stored_notes else "")
-
-    # --- 3. Pass 2: Create QCRecords for every bundle found ---
-    for entry in temp_bundles_to_save:
-        # Attach the shared notes to every record
-        entry["metrics"].append(MetricQC(name="QC_notes", notes=notes))
+        # Look up existing values at the Subject Level (using None for entities)
+        stored_rerun = get_val(f"sub-{sub_id}",ses, task, run, metric="require_rerun")
+        stored_notes = get_val(f"sub-{sub_id}",ses, task, run, metric="notes")
         
+        options = ("YES", "NO")
+
+        # Note: Unique key using ONLY sub_id to ensure only one radio button exists
+        require_rerun = st.radio(
+            "Require rerun?",
+            options,
+            key=f"{sub_id}_{ses}_{task}_{run}_rerun",
+            index=options.index(stored_rerun) if stored_rerun in options else None,
+            horizontal=True
+        )
+
+        final_qc = "FAIL" if require_rerun == "YES" else ("PASS" if require_rerun == "NO" else None)
+        notes = st.text_input(f"***NOTES***", key=f"{sub_id}_{ses}_{task}_{run}_notes", value=stored_notes if stored_notes else "")
+        bundle_metrics.append(MetricQC(name="QC_notes", notes=notes))
         record = QCRecord(
             subject_id=sub_id,
-            session_id=entry["ses"],
-            task_id=entry["task"],
-            run_id=entry["run"],
+            session_id=ses,
+            task_id=task,
+            run_id=run,
             pipeline="qsiprep-0.22.0",
             complete_timestamp=None,
             rater=rater_name,
             require_rerun=require_rerun,
             final_qc=final_qc,
-            metrics=entry["metrics"],
+            metrics=bundle_metrics,
         )
         qc_records.append(record)
+    # --- 3. Pass 2: Create QCRecords for every bundle found ---
+    # for entry in temp_bundles_to_save:
+    #     # Attach the shared notes to every record
+    #     entry["metrics"].append(MetricQC(name="QC_notes", notes=notes))
+        
+        # record = QCRecord(
+        #     subject_id=sub_id,
+        #     session_id=entry["ses"],
+        #     task_id=entry["task"],
+        #     run_id=entry["run"],
+        #     pipeline="qsiprep-0.22.0",
+        #     complete_timestamp=None,
+        #     rater=rater_name,
+        #     require_rerun=require_rerun,
+        #     final_qc=final_qc,
+        #     metrics=entry["metrics"],
+        # )
+        # qc_records.append(record)
 
 # Pagination Controls - MOVED TO TOP
 bottom_menu = st.columns((1, 2, 1))
