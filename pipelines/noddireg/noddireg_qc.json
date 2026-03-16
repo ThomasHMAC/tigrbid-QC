@@ -1,0 +1,23 @@
+{
+  "noddireg_density": {
+    "svg_montage_path": [
+      "../sample_data/derivatives/noddi_reg/sub-ED01/figures/sub-ED01_ses-01_desc-dsegtissue_model-noddi_density.png"
+    ]
+  },
+  "noddireg_od": {
+    "svg_montage_path": [
+      "../sample_data/derivatives/noddi_reg/sub-ED01/ses-01/dwi/sub-ED01_ses-01_od_mean_qc.png"
+    ]
+  },
+  "noddireg_icvf": {
+    "svg_montage_path": [
+      "../sample_data/derivatives/noddi_reg/sub-ED01/ses-01/dwi/sub-ED01_ses-01_icvf_mean_qc.png"
+    ]
+  },
+  "noddireg_isovf": {
+    "svg_montage_path": [
+      "../sample_data/derivatives/noddi_reg/sub-ED01/ses-01/dwi/sub-ED01_ses-01_isovf_mean_qc.png"
+    ]
+  },
+  "noddireg_overall": {}
+}
