@@ -1,0 +1,19 @@
+{
+    "xcpd": [
+        {
+            "pattern": "desc-qualitycontrol_bold",
+            "name": "Image Quality Metric",
+            "id": "IQM_qc"
+        },
+        {
+            "pattern": "desc-*ESQC_bold",
+            "name": "ESQC",
+            "id": "ESQC_bold_qc"
+        },
+        {
+            "pattern": "desc-connectivityplot_bold",
+            "name": "Connectivity Matrix",
+            "id": "connectivity_matrix_qc"
+        }
+    ]
+}
