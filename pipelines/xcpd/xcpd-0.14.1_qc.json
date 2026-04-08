@@ -23,7 +23,7 @@
             "type": "svg"
         },
         {
-            "pattern": "desc-dcan_qc",
+            "pattern": "desc-abcc_qc",
             "name": "Censoring Curve",
             "id": "censoring_curve_qc",
             "type": "hdf5"

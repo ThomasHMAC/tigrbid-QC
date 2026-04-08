@@ -22,6 +22,8 @@ import streamlit as st
 
 from ui import (
     collect_qc_record,
+    coverage_qc_fragment,
+    fd_censoring_fragment,
     qc_metric_fragment,
     render_pagination,
     render_scroll_to_top,
@@ -32,6 +34,7 @@ from utils import (
     get_current_batch,
     get_metrics_from_csv,
     load_qc_configs,
+    save_coverage_results_to_csv,
     save_qc_results_to_csv,
 )
 
@@ -80,8 +83,9 @@ out_dir           = args.out_dir
 qc_config         = args.qc_config
 
 participants_df = pd.read_csv(participant_labels, delimiter="\t")
-out_file        = Path(out_dir) / "XCPD_QC_status.csv"
-qc_configs      = load_qc_configs("xcpd", config_file=qc_config)
+out_file          = Path(out_dir) / "XCPD_QC_status.csv"
+coverage_out_dir = Path(out_dir) / "coverage_QC"
+pipeline_version, qc_configs, fd_config      = load_qc_configs("xcpd", config_file=qc_config)
 
 
 # Session state initialisation
@@ -117,7 +121,6 @@ def _cached_collect_subject_qc(xcpd_dir: str, sub_id: str, qc_configs: tuple):
 
 data_dict = _load_csv_data(str(out_file))
 
-
 def get_val(sub_id, ses_id=None, task_id=None, run_id=None, metric=None):
     """Reconstruct each rerun from the cached data_dict — cheap, no disk I/O."""
     if sub_id is None or metric is None:
@@ -140,7 +143,8 @@ if st.session_state.get("_save_and_advance"):
         st.session_state.batch_size,
     )
 
-    save_records = []
+    save_records   = []
+    coverage_rows  = []
     for _, row in current_batch_pre.iterrows():
         sub_id = row["participant_id"].split("_")[0].split("-")[1]
         qc_bundles = _cached_collect_subject_qc(xcpd_dir, sub_id, tuple(qc_configs))
@@ -148,7 +152,7 @@ if st.session_state.get("_save_and_advance"):
         for key in qc_bundles.keys():
             if key.label == "subject-level QC":
                 continue
-            expected_here = ["IQM_qc", "ESQC_bold_qc", "connectivity_matrix_qc"]
+            expected_here = [c[2] for c in qc_configs if c[3] == "svg"]
             record = collect_qc_record(
                 sub_id=sub_id,
                 ses=key.ses,
@@ -157,13 +161,20 @@ if st.session_state.get("_save_and_advance"):
                 metric_ids=expected_here,
                 qc_configs=qc_configs,
                 rater_name=st.session_state.get("rater_name_input", ""),
+                pipeline=pipeline_version
             )
             save_records.append(record)
 
+            # Collect coverage rows for the separate coverage CSV
+            cov_key = f"{sub_id}_{key.ses}_{key.task}_{key.run}_coverage_results"
+            coverage_rows.extend(st.session_state.get(cov_key, []))
+
     if save_records:
         save_qc_results_to_csv(out_file, save_records)
-        # Invalidate CSV cache so next page sees fresh data
-        # _load_csv.clear()
+        _load_csv_data.clear()
+
+    if coverage_rows:
+        save_coverage_results_to_csv(coverage_out_dir, coverage_rows)
 
     if st.session_state.current_page < math.ceil(
         len(participants_df) / st.session_state.batch_size
@@ -186,7 +197,7 @@ for _, row in current_batch.iterrows():
     sub_id = subj.split("_")[0].split("-")[1]
 
     qc_bundles = _cached_collect_subject_qc(xcpd_dir, sub_id, tuple(qc_configs))
-
+    
     if not qc_bundles:
         st.warning(f"No QC images found for sub-{sub_id}")
         continue
@@ -204,18 +215,18 @@ for _, row in current_batch.iterrows():
         with tab:
             for key in by_session[ses_label]:
                 ses, task, run = key.ses, key.task, key.run
-                expected_here = ["IQM_qc", "ESQC_bold_qc", "connectivity_matrix_qc"]
+                expected_here = [c[2] for c in qc_configs if c[3] == "svg"]
                 found_map     = {item.metric_name: item for item in qc_bundles[key]}
-
+                
                 with st.container():
+                    # SVG/HTML metrics — rater radio buttons + missing warnings
                     for metric_id in expected_here:
                         if metric_id in found_map:
-                            item = found_map[metric_id]
                             qc_metric_fragment(
-                                svg_list=item.svg_list,
+                                svg_list=found_map[metric_id].svg_list,
                                 sub_id=sub_id,
-                                qc_name=item.qc_name,
-                                metric_name=item.metric_name,
+                                qc_name=found_map[metric_id].qc_name,
+                                metric_name=metric_id,
                                 get_val=get_val,
                                 ses=ses,
                                 task=task,
@@ -226,6 +237,40 @@ for _, row in current_batch.iterrows():
                                 (c[1] for c in qc_configs if c[2] == metric_id), metric_id
                             )
                             st.warning(f"⚠️ **Missing Image:** '{pretty_label}' ({metric_id}) not found.")
+
+                    # Non-SVG metrics — dispatch by file_type
+                    for file_type in ("hdf5", "tsv"):
+                        expected_non_svg = [c for c in qc_configs if c[3] == file_type]
+                        for pattern, qc_name, metric_id, _ in expected_non_svg:
+                            item = found_map.get(metric_id)
+                            if item is None:
+                                st.warning(
+                                    f"⚠️ **Missing file:** '{qc_name}' ({metric_id}) "
+                                    f"[{file_type}] not found — check the pattern '{pattern}' in qc_config."
+                                )
+                                continue
+                            # We no longer need to display the censoring curve so comment out the HDF5 fragment to speed up rendering. We can re-enable if we want to show it again in the future.
+                            if file_type == "hdf5":
+                                # continue
+                                fd_censoring_fragment(
+                                    sub_id=sub_id,
+                                    h5_path=item.svg_list[0],
+                                    # metric="remaining_minutes",
+                                    threshold = fd_config["threshold"],
+                                )
+                            else:
+                                coverage_qc_fragment(
+                                    sub_id=sub_id,
+                                    tsv_list=item.svg_list,
+                                    ses=ses,
+                                    task=task,
+                                    run=run,
+                                )
+
+                    # Warn about any non-SVG items with an unexpected file_type
+                    for item in qc_bundles[key]:
+                        if item.file_type not in ("svg", "hdf5", "tsv"):
+                            st.warning(f"⚠️ Unrecognized file type '{item.file_type}' for metric '{item.metric_name}'. Cannot render QC fragment.")
 
                     verdict_fragment(
                         sub_id=sub_id,

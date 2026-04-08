@@ -12,10 +12,20 @@ import re
 from pathlib import Path
 from typing import Callable, List, Optional
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import streamlit as st
 
 from models import MetricQC, QCRecord
-from utils import QCEntry, QCKey
+from utils import (
+    QCEntry,
+    QCKey,
+    compute_coverage_qc,
+    load_coverage,
+    extract_fd_metrics_at_threshold,
+    load_fd_curves,
+)
 
 
 def format_qc_label(option: str) -> str:
@@ -111,7 +121,7 @@ def qc_metric_fragment(
                         f"<div style='text-align:center;font-size:18px;'><b>{label}</b></div>",
                         unsafe_allow_html=True,
                     )
-                st.markdown(_svg_as_img_tag(str(svg_path)), unsafe_allow_html=True)
+                st.markdown(_svg_as_img_tag(str(svg_path), max_width=900), unsafe_allow_html=True)
 
     # Radio button
     # Build a unique key for this widget
@@ -132,7 +142,7 @@ def qc_metric_fragment(
         run_id=run,
         metric=metric_name,
     )
-    
+
     with st.container(border=True):
         st.radio(
             f"{qc_name} QC:",
@@ -177,6 +187,172 @@ def verdict_fragment(
         key=f"{sub_id}_{ses}_{task}_{run}_notes",
         value=stored_notes if stored_notes else "",
     )
+
+
+@st.fragment
+def fd_censoring_fragment(
+    sub_id: str,
+    h5_path: Path,
+    # metric: str = "ratios",
+    threshold: float = 1,
+):
+    """
+    Renders the FD threshold censoring curve for one functional scan.
+    metric: one of 'ratios', 'remaining_frames', 'remaining_minutes'
+    """
+    # ylabel_map = {
+    #     "ratios":            ("Remaining / Total Frames", 0.8),
+    #     "remaining_frames":  ("Remaining Frames",         None),
+    #     "remaining_minutes": ("Remaining Time (min)",     "50%"),
+    # }
+    # ylabel, hline = ylabel_map[metric]
+
+    try:
+        data = load_fd_curves(h5_path)
+    except Exception as e:
+        st.warning(f"Could not load FD curves from `{h5_path.name}`: {e}")
+        return
+
+    # Resolve the 50% sentinel after data is available
+    # if hline == "50%":
+    #     max_val = data[metric].max() if hasattr(data[metric], "max") else max(data[metric])
+    #     hline = max_val * 0.5
+
+    label_parts = [p for p in [
+        f"ses-{data['session']}" if data["session"] else None,
+        f"task-{data['task']}"   if data["task"]    else None,
+        f"run-{data['run']}"     if data["run"]      else None,
+    ] if p]
+    curve_label = "_".join(label_parts) if label_parts else h5_path.stem
+    # fig, ax = plt.subplots(figsize=(5, 4))
+    # ax.plot(data["fds"], data[metric], alpha=0.7, label=curve_label)
+    # if hline is not None:
+    #     ax.axhline(y=hline, linestyle="--", color="red")
+    # ax.set_xlim(0, 0.5)
+    # # ax.set_title(f"sub-{sub_id} — FD Censoring Curve", fontsize=10, loc='left')
+    # ax.set_xlabel("FD Threshold", fontsize=8)
+    # ax.set_ylabel(ylabel, fontsize=8)
+    # ax.grid(True)
+    # ax.legend(fontsize=6, loc="lower right")
+    # fig.tight_layout()
+
+    # st.markdown(
+    #     f"<h4 style='font-family:Arial; color:darkblue;'>sub-{sub_id} — FD Censoring Curve</h4>",
+    #     unsafe_allow_html=True,
+    # )
+    # _, center, _ = st.columns([1, 2, 1])
+    # with center:
+    #     st.pyplot(fig, width='content')
+        
+    # plt.close(fig)
+
+    fd_metrics = extract_fd_metrics_at_threshold(h5_path)
+    st.markdown(
+    f"<h4 style='font-family:Arial; color:darkblue;'>sub-{sub_id} {curve_label} — FD Censoring Curve</h4>",
+    unsafe_allow_html=True,
+    )
+    fd_metrics = extract_fd_metrics_at_threshold(h5_path,threshold)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("FD Threshold", fd_metrics["fd_threshold"])
+    col2.metric("Total (min)", fd_metrics["total_minutes"])
+    col3.metric("Remaining (min)", fd_metrics["remaining_minutes"])
+    col4.metric("Min Duration QC", fd_metrics["min_duration_qc"])
+    if fd_metrics:
+        state_key = f"{sub_id}_ses-{data['session']}_{data['task']}_run-{data['run']}_fd_metrics"
+        st.session_state[state_key] = fd_metrics
+
+    st.divider()
+
+
+@st.fragment
+def coverage_qc_fragment(
+    sub_id: str,
+    tsv_list: List[Path],
+    ses: Optional[str],
+    task: Optional[str],
+    run: Optional[str],
+    threshold: float = 0.5,
+    fail_pct_cutoff: float = 10,
+):
+    """
+    Receives coverage TSV paths from collect_subject_qc, computes QC per atlas,
+    plots failing atlases, and stores results in st.session_state for later saving.
+    """
+    if not tsv_list:
+        return
+
+    st.markdown(
+        "<h4 style='font-family:Arial; color:darkblue;'>Atlas Coverage QC</h4>",
+        unsafe_allow_html=True,
+    )
+
+    qc_results = []
+    num_atlas_failed = []
+    for tsv_file in tsv_list:
+        result = load_coverage(tsv_file)
+        if result is None:
+            continue
+        atlas, parcels = result
+        qc = compute_coverage_qc(
+            parcels,
+            subject=f"sub-{sub_id}",
+            session=ses,
+            task=task,
+            run=run,
+            atlas=atlas,
+            threshold=threshold,
+            fail_pct_cutoff=fail_pct_cutoff,
+        )
+        
+        if qc['coverage_QC'] != "PASS":
+           num_atlas_failed.append(atlas)
+
+        qc_results.append(qc)
+
+        # display_atlas = atlas
+        # status_color = "green" if qc["coverage_QC"] == "PASS" else "red"
+        # st.markdown(
+        #     f"**:{status_color}[{qc['coverage_QC']}]** — `{display_atlas}` | "
+        #     f"{qc['n_failed_parcels']}/{qc['n_parcels']} parcels failed "
+        #     f"({qc['pct_failed']}%)"
+        # )
+
+        if qc["coverage_QC"] == "FAIL":
+            parcel_names  = list(parcels.index)
+            parcel_values = parcels.values.astype(float)
+            failed_mask   = parcel_values < threshold
+            failed_names  = [n for n, m in zip(parcel_names, failed_mask) if m]
+            failed_values = parcel_values[failed_mask]
+
+            fig, ax = plt.subplots(figsize=(7, max(3, len(failed_names) * 0.3)))
+            ax.barh(failed_names, failed_values, color="red")
+            ax.axvline(x=threshold, linestyle="--", color="black", linewidth=1)
+            ax.set_xlabel("signal within parcel %", fontsize=9)
+            ax.set_xlim(0, threshold + 0.1)
+            ax.set_title(
+                f"{atlas} — Failed Parcels ({len(failed_names)}/{len(parcel_values)})",
+                fontsize=9,
+            )
+            fig.tight_layout()
+
+            _, center, _ = st.columns([1, 2, 1])
+            with center:
+                st.pyplot(fig, width='content')
+            plt.close(fig)
+            
+    if num_atlas_failed:
+        status_color = "red"
+        failed_list = ", ".join(num_atlas_failed)
+        st.markdown(f"**:{status_color}[FAIL]** — `{failed_list}` | ")
+    else:
+        status_color = "green"
+        st.markdown(f"**:{status_color}[PASS]**")    
+            
+
+    # Store computed results in session state so collect_qc_record can save them
+    state_key = f"{sub_id}_{ses}_{task}_{run}_coverage_results"
+    st.session_state[state_key] = qc_results
+    st.divider()
 
 
 def render_pagination(total_rows: int) -> None:
@@ -262,7 +438,7 @@ def collect_qc_record(
     metric_ids: List[str],
     qc_configs: list,
     rater_name: str,
-    pipeline: str = "xcpd-0.7.3",
+    pipeline: str,
 ) -> QCRecord:
     """
     Reads widget values from st.session_state and assembles a QCRecord.
@@ -289,6 +465,14 @@ def collect_qc_record(
     final_qc      = "FAIL" if require_rerun == "YES" else ("PASS" if require_rerun == "NO" else None)
 
     bundle_metrics.append(MetricQC(name="QC_notes", notes=notes))
+
+    # Append auto-computed FD metrics at threshold=0.3
+    fd_key = f"{sub_id}_{ses}_{task}_{run}_fd_metrics"
+    for name, val in st.session_state.get(fd_key, {}).items():
+        if name == "fd_pass":
+            bundle_metrics.append(MetricQC(name="fd_pass", qc=val))
+        else:
+            bundle_metrics.append(MetricQC(name=name, value=val))
 
     return QCRecord(
         subject_id=sub_id,
