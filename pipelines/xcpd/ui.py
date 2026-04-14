@@ -95,7 +95,8 @@ def qc_metric_fragment(
 
     # Displaying
     # with st.expander(qc_name, expanded=True):
-    cols = st.columns(len(svg_list), vertical_alignment="center")
+    sorted_svg_list = sorted(svg_list, key=lambda p: (1 if "postprocESQC" in p.name else 0))
+    cols = st.columns(len(sorted_svg_list), vertical_alignment="center")
     for col, svg_path in zip(cols, svg_list):
         if not svg_path.exists():
             col.warning(f"Missing file: {svg_path.name}")
@@ -121,7 +122,14 @@ def qc_metric_fragment(
                         f"<div style='text-align:center;font-size:18px;'><b>{label}</b></div>",
                         unsafe_allow_html=True,
                     )
-                st.markdown(_svg_as_img_tag(str(svg_path), max_width=900), unsafe_allow_html=True)
+                # st.markdown(_read_file(str(svg_path), max_width=900), unsafe_allow_html=True)
+                svg = re.sub(
+                    r"<svg\b",
+                    '<svg style="max-width:900px; width:100%; height:auto; display:block; margin:auto;"',
+                    _read_file(str(svg_path)),
+                    count=1,
+                )
+                st.markdown(svg, unsafe_allow_html=True)
 
     # Radio button
     # Build a unique key for this widget
