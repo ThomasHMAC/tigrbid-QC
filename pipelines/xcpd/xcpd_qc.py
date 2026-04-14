@@ -85,7 +85,7 @@ qc_config         = args.qc_config
 participants_df = pd.read_csv(participant_labels, delimiter="\t")
 out_file          = Path(out_dir) / "XCPD_QC_status.csv"
 coverage_out_dir = Path(out_dir) / "coverage_QC"
-pipeline_version, qc_configs, fd_config      = load_qc_configs("xcpd", config_file=qc_config)
+pipeline_version, qc_configs, fd_threshold = load_qc_configs("xcpd", config_file=qc_config)
 
 
 # Session state initialisation
@@ -256,7 +256,7 @@ for _, row in current_batch.iterrows():
                                     sub_id=sub_id,
                                     h5_path=item.svg_list[0],
                                     # metric="remaining_minutes",
-                                    threshold = fd_config["threshold"],
+                                    threshold = fd_threshold,
                                 )
                             else:
                                 coverage_qc_fragment(

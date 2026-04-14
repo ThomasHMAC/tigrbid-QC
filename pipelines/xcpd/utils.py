@@ -46,13 +46,13 @@ def load_qc_configs(pipeline_name: str, config_file: str) -> List[Tuple[str, str
 
     if pipeline_name not in configs:
         raise ValueError(f"Pipeline '{pipeline_name}' not found in {config_file}.")
-    pipeline_version = configs.get("pipeline", pipeline_name)                                   
-    fd_config = configs.get("fd", {"threshold": 0.3, "min_minutes": 5})
+    pipeline_version = configs.get("pipeline", pipeline_name)
+    fd_threshold = configs.get("fd", {}).get("threshold", 0.3)
     qc_configs = [
         (item["pattern"], item["name"], item["id"], item.get("type", "svg"))
         for item in configs[pipeline_name]
     ]
-    return pipeline_version, qc_configs, fd_config
+    return pipeline_version, qc_configs, fd_threshold
 
 
 def load_fd_params(config_file: str) -> dict:
@@ -121,9 +121,38 @@ def collect_subject_qc(
     configs: List[Tuple[str, str, str, str]],
 ) -> Dict[QCKey, List[QCEntry]]:
     """
-    Walk the subject's directories and group QC files by BIDS entities + metric.
-    Each config entry declares its type ("svg", "hdf5", "tsv") which controls
-    which subdirectory and file suffix to search.
+    Walk a subject's output directories and group discovered QC files by BIDS
+    entities and metric type.
+
+    For each config entry the function:
+      1. Resolves the target subdirectory and allowed extensions from ``file_type``
+         using ``_TYPE_DIRS`` / ``_TYPE_SUFFIXES``.
+      2. Finds candidate directories via ``_get_search_paths``, which checks for a
+         flat layout (``sub-<id>/<subdir>/``) first, then falls back to per-session
+         paths (``sub-<id>/ses-*/<subdir>/``).
+      3. Globs for files matching ``sub-{sub_id}*{pattern}*`` and filters by suffix.
+      4. Extracts a ``QCKey`` from each filename (ses / task / run BIDS entities)
+         to determine the granularity level (subject / session / task / run).
+      5. Accumulates matching files into a ``QCEntry`` per ``(QCKey, metric_id)``
+         pair — multiple files for the same metric (e.g. two hemisphere SVGs) are
+         appended to ``QCEntry.svg_list``.
+
+    Parameters
+    ----------
+    xcpd_dir:
+        Root of the XCP-D output tree (parent of all ``sub-*`` directories).
+    sub_id:
+        Subject label *without* the ``sub-`` prefix.
+    configs:
+        List of ``(pattern, qc_name, metric_id, file_type)`` tuples as returned
+        by ``load_qc_configs``.  ``file_type`` must be one of ``"svg"``,
+        ``"hdf5"``, or ``"tsv"``.
+
+    Returns
+    -------
+    Dict[QCKey, List[QCEntry]]
+        Maps each BIDS-entity key to the list of QC entries (one per metric)
+        found for that granularity level.
     """
     xcpd_dir = Path(xcpd_dir)
     base_path = xcpd_dir / f"sub-{sub_id}"
