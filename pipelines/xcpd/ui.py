@@ -97,7 +97,7 @@ def qc_metric_fragment(
     # with st.expander(qc_name, expanded=True):
     sorted_svg_list = sorted(svg_list, key=lambda p: (1 if "postprocESQC" in p.name else 0))
     cols = st.columns(len(sorted_svg_list), vertical_alignment="center")
-    for col, svg_path in zip(cols, svg_list):
+    for col, svg_path in zip(cols, sorted_svg_list):
         if not svg_path.exists():
             col.warning(f"Missing file: {svg_path.name}")
             continue
@@ -188,7 +188,7 @@ def verdict_fragment(
         key=f"{sub_id}_{ses}_{task}_{run}_rerun",
         index=options.index(stored_rerun) if stored_rerun in options else None,
         horizontal=True,
-        format_func=format_qc_label
+        format_func=format_qc_label,
     )
     st.text_input(
         "***NOTES***",
@@ -383,6 +383,7 @@ def render_pagination(total_rows: int) -> None:
         if new_batch_size != st.session_state.batch_size:
             st.session_state.batch_size = new_batch_size
             st.session_state.current_page = 1
+            st.session_state["_reset_session_tab"] = True
             st.rerun()
 
     import math
@@ -394,6 +395,7 @@ def render_pagination(total_rows: int) -> None:
         if col1.button("⬅️"):
             if st.session_state.current_page > 1:
                 st.session_state.current_page -= 1
+                st.session_state["_reset_session_tab"] = True
                 st.rerun()
 
         new_page = col2.number_input(
@@ -405,17 +407,53 @@ def render_pagination(total_rows: int) -> None:
         )
         if new_page != st.session_state.current_page:
             st.session_state.current_page = new_page
+            st.session_state["_reset_session_tab"] = True
             st.rerun()
 
         if col3.button("➡️"):
             # Signal to the caller to save before advancing
             st.session_state["_save_and_advance"] = True
+            st.session_state["_reset_session_tab"] = True
             st.rerun()
 
     with bottom_menu[0]:
         st.markdown(f"Page **{st.session_state.current_page}** of **{total_pages}**")
 
     return total_pages
+
+
+def render_session_tabs(sub_id: str, session_labels: list, fmt=None):
+    """
+    Render session tabs. Resets to the first tab on page navigation.
+    Returns (tabs, session_labels) matching st.tabs() order.
+
+    fmt: optional callable to convert a session_label to a display string.
+         Defaults to the label itself, or "(no session)" for None.
+    """
+    if fmt is None:
+        fmt = lambda lbl: lbl if lbl is not None else "(no session)"
+
+    display_labels = [fmt(lbl) for lbl in session_labels]
+
+    tab_key = f"session_tabs_{sub_id}"
+    if st.session_state.pop("_reset_session_tab", False) and display_labels:
+        st.session_state[tab_key] = display_labels[0]
+
+    return st.tabs(display_labels, key=tab_key, on_change="rerun"), session_labels
+
+
+def render_run_tabs(run_keys: list, tab_key: str):
+    """
+    Render run-level tabs. Returns list of (context_manager, QCKey) pairs.
+    For a single run, returns a plain container (no tab rendered).
+    """
+    if not run_keys:
+        return []
+    if len(run_keys) == 1:
+        return [(st.container(), run_keys[0])]
+
+    display_labels = [k.run or "(no run)" for k in run_keys]
+    return list(zip(st.tabs(display_labels, key=tab_key, on_change="rerun"), run_keys))
 
 
 def render_scroll_to_top() -> None:
