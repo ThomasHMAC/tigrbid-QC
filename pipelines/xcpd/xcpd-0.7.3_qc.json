@@ -1,5 +1,5 @@
 {
-    "pipeline": "xcpd-0.14.1",
+    "pipeline": "xcpd-0.7.3",
     "fd": {
         "threshold": 1
     },
