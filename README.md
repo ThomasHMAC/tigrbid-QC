@@ -5,7 +5,7 @@ cd /projects/ttan
 module load python/3.10.7
 python -m venv tigrbid_QC_env
 source tigrbid_QC_env/bin/activate
-pip install streamlit==1.49.1 pandas==2.3.2 pydantic==2.11.7 beautifulsoup4
+pip install streamlit==1.56.0 pandas==2.3.2 pydantic==2.11.7 beautifulsoup4
 
 git clone https://github.com/ThomasHMAC/tigrbid-QC.git
 ```
@@ -37,7 +37,14 @@ cd /projects/ttan/tigrbid-QC
 streamlit run ./pipelines/qsiprep/qsiprep_qc.py -- --qsiprep_dir /projects/ttan/PSIBD/data/share/qsiprep/0.22.0/ --participant_labels /projects/ttan/PSIBD/data/local/bids/participants.tsv --output_dir /projects/ttan/tigrbid-QC/outputs/PSIBD_QC_13022026
 ```
 
-5. Run streamlit remotely through ssh tunnel
+6. Run XCPD QC dashboard
+```bash
+cd /projects/ttan/tigrbid-QC
+streamlit run ./xcpd_qc.py -- --xcpd_dir "/projects/ttan/ASCEND/data/derivatives/xcp_d/0.7.3" --participant_labels "/projects/ttan/ASCEND/data/bids/participants.tsv" --output_dir "/projects/ttan/tigrbid-QC/outputs/ASCEND_20260323/" --qc_config "/projects/ttan/tigrbid-QC/pipelines/xcpd/xcpd-0.7.3_qc.json"
+
+```
+
+7. Run streamlit remotely through ssh tunnel
 ```bash
 ssh -X -L 8501:localhost:8501 ttan@darwin.camhres.ca
 cd /projects/ttan/tigrbid-QC
