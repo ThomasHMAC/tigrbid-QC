@@ -164,7 +164,8 @@ if st.session_state.get("_save_and_advance"):
                 metric_ids=expected_here,
                 qc_configs=qc_configs,
                 rater_name=st.session_state.get("rater_name_input", ""),
-                pipeline=pipeline_version
+                pipeline=pipeline_version,
+                get_val=get_val,
             )
             save_records.append(record)
 
@@ -221,30 +222,58 @@ for _, row in current_batch.iterrows():
     outer_tabs, ses_task_keys = render_session_tabs(
         sub_id, ses_task_keys, fmt=_fmt_ses_task
     )
-    st.write(f"sessions are : {ses_task_keys}")
-    # Lazy rendering: resolve which outer tab is active so we only render its content.
+    # Lazy rendering: only render the active tab's content
+    # _outer_tab_key match the key in render_session_tabs
     _outer_tab_key = f"session_tabs_{sub_id}"
-    _active_ses_task = next(
-        (stk for stk in ses_task_keys if _fmt_ses_task(stk) == st.session_state.get(_outer_tab_key, "")),
-        ses_task_keys[0] if ses_task_keys else None,
-    )
+
+    # Empty string on first load (nothing clicked yet).
+    selected_label = st.session_state.get(_outer_tab_key, "")
+    # find the (ses, task) tuple whose formatted label matches what was clicked
+    _active_ses_task = None
+    for stk in ses_task_keys:
+        formatted = _fmt_ses_task(stk)      # e.g. "ses-01 | rest-01"
+        if formatted == selected_label:
+            _active_ses_task = stk          # e.g. ("ses-01", "rest-01")
+            break
+    # if nothing matched (first load, selected_label is ""), default to first
+    if _active_ses_task is None:
+        _active_ses_task = ses_task_keys[0] if ses_task_keys else None
+
+    # _active_ses_task = next(
+    #     (stk for stk in ses_task_keys if _fmt_ses_task(stk) == st.session_state.get(_outer_tab_key, "")),
+    #     ses_task_keys[0] if ses_task_keys else None,
+    # )
 
     for outer_tab, ses_task in zip(outer_tabs, ses_task_keys):
         with outer_tab:
             if ses_task != _active_ses_task:
                 continue
+            # Give the list of QCKeys for the active session
             run_keys = sorted(by_ses_task[ses_task], key=lambda k: k.run or "")
             run_tab_key = f"run_tabs_{sub_id}_{ses_task[0]}_{ses_task[1]}"
             run_pairs = render_run_tabs(run_keys, run_tab_key)
 
             # Lazy rendering: only render the active run tab
-            _active_run_key = next(
-                (k for _, k in run_pairs if (k.run or "(no run)") == st.session_state.get(run_tab_key, "")),
-                run_pairs[0][1] if run_pairs else None,
-            )
+            # Step 1: what run label did the user click?
+            selected_run_label = st.session_state.get(run_tab_key, "")
 
-            for run_ctx, key in run_pairs:
-                with run_ctx:
+            # Step 2: find the QCKey whose run label matches
+            _active_run_key = None
+            for _, run_key in run_pairs:
+                if (run_key.run or "(no run)") == selected_run_label:
+                    _active_run_key = run_key
+                    break
+
+            # Step 3: default to first run on first load
+            if _active_run_key is None:
+                _active_run_key = run_pairs[0][1] if run_pairs else None
+            # _active_run_key = next(
+            #     (k for _, k in run_pairs if (k.run or "(no run)") == st.session_state.get(run_tab_key, "")),
+            #     run_pairs[0][1] if run_pairs else None,
+            # )
+
+            for run_tab, key in run_pairs:
+                with run_tab:
                     if len(run_pairs) > 1 and key != _active_run_key:
                         continue
                     ses, task, run = key.ses, key.task, key.run
@@ -312,6 +341,28 @@ for _, row in current_batch.iterrows():
                             run=run,
                             get_val=get_val,
                         )
+
+                        if st.button(
+                            "💾 Save this tab",
+                            key=f"save_tab_{sub_id}_{ses}_{task}_{run}",
+                        ):
+                            record = collect_qc_record(
+                                sub_id=sub_id,
+                                ses=ses,
+                                task=task,
+                                run=run,
+                                metric_ids=expected_here,
+                                qc_configs=qc_configs,
+                                rater_name=st.session_state.get("rater_name_input", ""),
+                                pipeline=pipeline_version,
+                            )
+                            save_qc_results_to_csv(out_file, [record])
+                            _load_csv_data.clear()
+                            cov_key = f"{sub_id}_{ses}_{task}_{run}_coverage_results"
+                            cov_rows = st.session_state.get(cov_key, [])
+                            if cov_rows:
+                                save_coverage_results_to_csv(coverage_out_dir, cov_rows)
+                            st.toast("Saved!", icon="✅")
             
 # Pagination controls + scroll anchor
 

@@ -485,10 +485,12 @@ def collect_qc_record(
     qc_configs: list,
     rater_name: str,
     pipeline: str,
+    get_val: Optional[Callable] = None,
 ) -> QCRecord:
     """
     Reads widget values from st.session_state and assembles a QCRecord.
-    Call this AFTER all fragments for a bundle have been rendered.
+    Falls back to get_val (CSV) for any tab whose widget keys were cleared by
+    lazy rendering — this preserves values saved via the per-tab save button.
     """
     bundle_metrics: List[MetricQC] = []
 
@@ -501,14 +503,21 @@ def collect_qc_record(
         widget_key = "_".join(key_parts)
 
         qc_val = st.session_state.get(widget_key)
+        if qc_val is None and get_val is not None:
+            qc_val = get_val(sub_id=f"sub-{sub_id}", ses_id=ses, task_id=task, run_id=run, metric=metric_id)
         bundle_metrics.append(MetricQC(name=metric_id, qc=qc_val))
 
     rerun_key = f"{sub_id}_{ses}_{task}_{run}_rerun"
     notes_key = f"{sub_id}_{ses}_{task}_{run}_notes"
 
     require_rerun = st.session_state.get(rerun_key)
-    notes         = st.session_state.get(notes_key, "")
-    final_qc      = "FAIL" if require_rerun == "YES" else ("PASS" if require_rerun == "NO" else None)
+    if require_rerun is None and get_val is not None:
+        require_rerun = get_val(sub_id=f"sub-{sub_id}", ses_id=ses, task_id=task, run_id=run, metric="require_rerun")
+    notes = st.session_state.get(notes_key) or (
+        get_val(sub_id=f"sub-{sub_id}", ses_id=ses, task_id=task, run_id=run, metric="notes")
+        if get_val is not None else ""
+    ) or ""
+    final_qc = "FAIL" if require_rerun == "YES" else ("PASS" if require_rerun == "NO" else None)
 
     bundle_metrics.append(MetricQC(name="QC_notes", notes=notes))
 
